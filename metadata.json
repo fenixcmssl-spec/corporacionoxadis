@@ -1,0 +1,6 @@
+{
+  "name": "FenixCMS SaaS - Multi-tenant CMS & Commerce Engine",
+  "description": "Plataforma SaaS CMS multitenant, multidominio y multilingüe con motor de plugins, temas y tienda online integrada.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

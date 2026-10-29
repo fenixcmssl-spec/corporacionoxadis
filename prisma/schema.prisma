@@ -1,0 +1,533 @@
+// ============================================================================
+// FENIXCMS SAAS — ESQUEMA DE DATOS POSTGRESQL (PRISMA ORM)
+// FASE 1.2: MODELO DE DATOS INICIAL Y RELACIONES MULTITENANT
+// ============================================================================
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ----------------------------------------------------------------------------
+// ENUMS Y ESTADOS EXPLÍCITOS DE LA PLATAFORMA
+// ----------------------------------------------------------------------------
+
+enum UserStatus {
+  ACTIVE
+  SUSPENDED
+  PENDING_VERIFICATION
+  DEACTIVATED
+}
+
+enum UserType {
+  SUPERADMIN
+  TENANT_USER
+}
+
+enum TenantStatus {
+  TRIAL
+  ACTIVE
+  PAST_DUE
+  SUSPENDED
+  CANCELLED
+}
+
+enum BillingCycle {
+  MONTHLY
+  YEARLY
+}
+
+enum SubscriptionStatus {
+  TRIALING
+  ACTIVE
+  PAST_DUE
+  CANCELLED
+  EXPIRED
+  UNPAID
+}
+
+enum LicenseStatus {
+  ACTIVE
+  REVOKED
+  EXPIRED
+  SUSPENDED
+}
+
+enum ActivationStatus {
+  ACTIVE
+  REVOKED
+  DEACTIVATED
+}
+
+enum PaymentStatus {
+  PENDING
+  AUTHORIZED
+  SETTLED
+  FAILED
+  REFUNDED
+  CHARGEBACK
+}
+
+enum PaymentGateway {
+  STRIPE
+  BIZUM
+  BANK_TRANSFER
+  INTERNAL_MANUAL
+}
+
+enum DomainVerificationStatus {
+  PENDING
+  VERIFIED
+  FAILED
+}
+
+enum SslStatus {
+  PENDING
+  ACTIVE
+  FAILED
+  REVOKED
+}
+
+enum AuditAction {
+  USER_LOGIN
+  USER_LOGOUT
+  TENANT_CREATED
+  TENANT_SUSPENDED
+  TENANT_ACTIVATED
+  PLAN_CREATED
+  PLAN_UPDATED
+  LICENSE_ISSUED
+  LICENSE_REVOKED
+  DOMAIN_LINKED
+  DOMAIN_VERIFIED
+  DOMAIN_REMOVED
+  PAYMENT_PROCESSED
+  PAYMENT_FAILED
+  SECURITY_ALERT
+}
+
+enum AuditSeverity {
+  INFO
+  WARNING
+  CRITICAL
+}
+
+// ============================================================================
+// 1. GESTIÓN DE USUARIOS, SESIONES Y CONTROL DE ACCESO (RBAC)
+// ============================================================================
+
+model User {
+  id               String     @id @default(cuid())
+  email            String     @unique
+  passwordHash     String
+  fullName         String
+  userType         UserType   @default(TENANT_USER)
+  status           UserStatus @default(ACTIVE)
+  tenantId         String?
+  emailVerifiedAt  DateTime?
+  twoFactorEnabled Boolean    @default(false)
+  lastLoginAt      DateTime?
+  createdAt        DateTime   @default(now())
+  updatedAt        DateTime   @updatedAt
+
+  // Relaciones
+  tenant              Tenant?              @relation(fields: [tenantId], references: [id], onDelete: SetNull)
+  roles               UserRole[]
+  sessions            Session[]
+  passwordResetTokens PasswordResetToken[]
+  auditLogsInitiated  AuditLog[]           @relation("AuditActor")
+
+  @@index([tenantId])
+  @@index([email])
+  @@index([userType, status])
+  @@map("users")
+}
+
+model Role {
+  id           String   @id @default(cuid())
+  name         String
+  slug         String
+  description  String?
+  isSystemRole Boolean  @default(false)
+  tenantId     String? // null = Rol Global de plataforma; not null = Rol específico del tenant
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  // Relaciones
+  tenant      Tenant?          @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  users       UserRole[]
+  permissions RolePermission[]
+
+  @@unique([tenantId, slug])
+  @@index([tenantId])
+  @@index([slug])
+  @@map("roles")
+}
+
+model Permission {
+  id          String   @id @default(cuid())
+  name        String
+  slug        String   @unique // e.g. "tenants:manage", "domains:write", "billing:view"
+  moduleSlug  String?
+  description String?
+  createdAt   DateTime @default(now())
+
+  // Relaciones
+  roles RolePermission[]
+
+  @@index([moduleSlug])
+  @@map("permissions")
+}
+
+model RolePermission {
+  id           String   @id @default(cuid())
+  roleId       String
+  permissionId String
+  createdAt    DateTime @default(now())
+
+  // Relaciones
+  role       Role       @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  permission Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+
+  @@unique([roleId, permissionId])
+  @@index([roleId])
+  @@index([permissionId])
+  @@map("role_permissions")
+}
+
+model UserRole {
+  id         String   @id @default(cuid())
+  userId     String
+  roleId     String
+  assignedAt DateTime @default(now())
+
+  // Relaciones
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role Role @relation(fields: [roleId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, roleId])
+  @@index([userId])
+  @@index([roleId])
+  @@map("user_roles")
+}
+
+model Session {
+  id           String   @id @default(cuid())
+  sessionToken String   @unique
+  userId       String
+  ipAddress    String?
+  userAgent    String?
+  isRevoked    Boolean  @default(false)
+  expiresAt    DateTime
+  createdAt    DateTime @default(now())
+  lastActiveAt DateTime @default(now())
+
+  // Relaciones
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([expiresAt])
+  @@map("sessions")
+}
+
+model PasswordResetToken {
+  id        String    @id @default(cuid())
+  tokenHash String    @unique
+  userId    String
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  // Relaciones
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([expiresAt])
+  @@map("password_reset_tokens")
+}
+
+// ============================================================================
+// 2. TENANTS (ORGANIZACIONES CLIENTES) Y MULTIDOMINIO
+// ============================================================================
+
+model Tenant {
+  id        String       @id @default(cuid())
+  name      String
+  slug      String       @unique // Subdominio interno: e.g. "modaurbana" (.fenixcms.app)
+  status    TenantStatus @default(TRIAL)
+  planId    String
+  createdAt DateTime     @default(now())
+  updatedAt DateTime     @updatedAt
+
+  // Relaciones con política de conservación contable/auditoría
+  plan          Plan           @relation(fields: [planId], references: [id], onDelete: Restrict)
+  users         User[]
+  roles         Role[]
+  domains       Domain[]
+  licenses      License[]
+  subscriptions Subscription[]
+  payments      Payment[] // Borrado restringido: datos financieros protegidos
+  auditLogs     AuditLog[] // Borrado conservado: auditoría protegida
+
+  @@index([slug])
+  @@index([status])
+  @@index([planId])
+  @@map("tenants")
+}
+
+model Domain {
+  id                 String                   @id @default(cuid())
+  tenantId           String
+  hostname           String                   @unique // e.g. "modaurbana-boutique.com"
+  isPrimary          Boolean                  @default(false)
+  verificationStatus DomainVerificationStatus @default(PENDING)
+  verificationToken  String? // Token DNS TXT
+  verifiedAt         DateTime?
+  sslStatus          SslStatus                @default(PENDING)
+  sslIssuedAt        DateTime?
+  createdAt          DateTime                 @default(now())
+  updatedAt          DateTime                 @updatedAt
+
+  // Relaciones
+  tenant      Tenant              @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  activations LicenseActivation[]
+
+  @@index([tenantId])
+  @@index([hostname])
+  @@index([isPrimary])
+  @@map("domains")
+}
+
+// ============================================================================
+// 3. CATÁLOGO DE MÓDULOS, PLANES Y LÍMITES SAAS
+// ============================================================================
+
+model PlatformModule {
+  id          String   @id @default(cuid())
+  slug        String   @unique // "ecommerce", "multilanguage", "plugins_engine", "custom_domains", "api_access"
+  name        String
+  description String
+  category    String // "CORE", "COMMERCE", "EXPANSION", "INTEGRATION"
+  isAvailable Boolean  @default(true)
+  createdAt   DateTime @default(now())
+
+  // Relaciones
+  planModules PlanModule[]
+
+  @@index([slug])
+  @@map("platform_modules")
+}
+
+model Plan {
+  id           String   @id @default(cuid())
+  name         String
+  slug         String   @unique // "starter", "pro", "enterprise"
+  description  String
+  priceMonthly Decimal  @db.Decimal(10, 2)
+  priceYearly  Decimal  @db.Decimal(10, 2)
+  isPublic     Boolean  @default(true)
+  isActive     Boolean  @default(true)
+  sortOrder    Int      @default(0)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  // Relaciones
+  tenants       Tenant[]
+  subscriptions Subscription[]
+  modules       PlanModule[]
+  limits        PlanLimit[]
+
+  @@index([slug])
+  @@index([isActive])
+  @@map("plans")
+}
+
+model PlanModule {
+  id        String   @id @default(cuid())
+  planId    String
+  moduleId  String
+  isEnabled Boolean  @default(true)
+  createdAt DateTime @default(now())
+
+  // Relaciones
+  plan   Plan           @relation(fields: [planId], references: [id], onDelete: Cascade)
+  module PlatformModule @relation(fields: [moduleId], references: [id], onDelete: Restrict)
+
+  @@unique([planId, moduleId])
+  @@index([planId])
+  @@index([moduleId])
+  @@map("plan_modules")
+}
+
+model PlanLimit {
+  id          String   @id @default(cuid())
+  planId      String
+  limitKey    String // "max_domains", "max_storage_mb", "max_products", "max_languages", "max_team_members"
+  limitValue  Int // Cantidad permitida (-1 = ilimitado)
+  description String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  // Relaciones
+  plan Plan @relation(fields: [planId], references: [id], onDelete: Cascade)
+
+  @@unique([planId, limitKey])
+  @@index([planId])
+  @@map("plan_limits")
+}
+
+// ============================================================================
+// 4. LICENCIAS CRIPTOGRÁFICAS Y ACTIVACIÓN DE DOMINIOS
+// ============================================================================
+
+model License {
+  id               String        @id @default(cuid())
+  licenseKey       String        @unique // Clave estructurada: "FNX-PRO-..."
+  tenantId         String
+  status           LicenseStatus @default(ACTIVE)
+  maxDomains       Int           @default(1)
+  maxActivations   Int           @default(1)
+  issuedAt         DateTime      @default(now())
+  expiresAt        DateTime
+  revokedAt        DateTime?
+  revocationReason String?
+  signatureHash    String // Hash HMAC/SHA256 para validación contra manipulación
+  createdAt        DateTime      @default(now())
+  updatedAt        DateTime      @updatedAt
+
+  // Relaciones
+  tenant      Tenant              @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  activations LicenseActivation[]
+
+  @@index([tenantId])
+  @@index([licenseKey])
+  @@index([status])
+  @@map("licenses")
+}
+
+model LicenseActivation {
+  id                  String           @id @default(cuid())
+  licenseId           String
+  domainId            String
+  status              ActivationStatus @default(ACTIVE)
+  activatedAt         DateTime         @default(now())
+  deactivatedAt       DateTime?
+  instanceFingerprint String? // Huella criptográfica del entorno de ejecución
+  createdAt           DateTime         @default(now())
+
+  // Relaciones
+  license License @relation(fields: [licenseId], references: [id], onDelete: Cascade)
+  domain  Domain  @relation(fields: [domainId], references: [id], onDelete: Cascade)
+
+  @@unique([licenseId, domainId])
+  @@index([licenseId])
+  @@index([domainId])
+  @@index([status])
+  @@map("license_activations")
+}
+
+// ============================================================================
+// 5. SUSCRIPCIONES Y PAGOS (LIBRO MAYOR FINANCIERO INMUTABLE)
+// ============================================================================
+
+model Subscription {
+  id                    String             @id @default(cuid())
+  tenantId              String
+  planId                String
+  billingCycle          BillingCycle       @default(MONTHLY)
+  status                SubscriptionStatus @default(TRIALING)
+  recurringAmount       Decimal            @db.Decimal(10, 2)
+  currency              String             @default("EUR")
+  currentPeriodStart    DateTime
+  currentPeriodEnd      DateTime
+  cancelAtPeriodEnd     Boolean            @default(false)
+  canceledAt            DateTime?
+  trialEndsAt           DateTime?
+  gatewaySubscriptionId String? // Referencia externa (e.g. sub_stripe_xxx)
+  createdAt             DateTime           @default(now())
+  updatedAt             DateTime           @updatedAt
+
+  // Relaciones
+  tenant   Tenant    @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  plan     Plan      @relation(fields: [planId], references: [id], onDelete: Restrict)
+  payments Payment[]
+
+  @@index([tenantId])
+  @@index([status])
+  @@index([currentPeriodEnd])
+  @@map("subscriptions")
+}
+
+model Payment {
+  id                     String         @id @default(cuid())
+  tenantId               String
+  subscriptionId         String?
+  amount                 Decimal        @db.Decimal(10, 2)
+  vatAmount              Decimal        @default(0.00) @db.Decimal(10, 2)
+  currency               String         @default("EUR")
+  status                 PaymentStatus  @default(PENDING)
+  gateway                PaymentGateway @default(STRIPE)
+  transactionId          String         @unique // Identificador pasarela (e.g. tx_stripe_xxx)
+  verificationAuditToken String? // Código criptográfico de verificación bancaria
+  invoiceNumber          String?        @unique
+  paidAt                 DateTime?
+  failureReason          String?
+  metadataJson           String?        @db.Text
+  createdAt              DateTime       @default(now())
+
+  // Relaciones con protección contable inmutable: onDelete: Restrict
+  tenant       Tenant        @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  subscription Subscription? @relation(fields: [subscriptionId], references: [id], onDelete: Restrict)
+
+  @@index([tenantId])
+  @@index([transactionId])
+  @@index([status])
+  @@index([paidAt])
+  @@map("payments")
+}
+
+// ============================================================================
+// 6. AUDITORÍA INMUTABLE Y CONFIGURACIÓN GLOBAL
+// ============================================================================
+
+model AuditLog {
+  id             String        @id @default(cuid())
+  tenantId       String? // null = Acción global de infraestructura; not null = Acción en tenant
+  actorId        String? // Usuario que ejecutó la acción
+  actorEmail     String
+  action         AuditAction
+  severity       AuditSeverity @default(INFO)
+  ipAddress      String?
+  targetResource String // e.g. "tenant:tenant_moda_01", "license:FNX-PRO-99"
+  details        String        @db.Text
+  payloadJson    String?       @db.Text
+  timestamp      DateTime      @default(now())
+
+  // Relaciones con conservación obligatoria: onDelete: SetNull
+  tenant Tenant? @relation(fields: [tenantId], references: [id], onDelete: SetNull)
+  actor  User?   @relation("AuditActor", fields: [actorId], references: [id], onDelete: SetNull)
+
+  @@index([tenantId])
+  @@index([actorId])
+  @@index([action])
+  @@index([severity])
+  @@index([timestamp])
+  @@map("audit_logs")
+}
+
+model PlatformSetting {
+  id          String   @id @default(cuid())
+  key         String   @unique // e.g. "maintenance_mode", "enforce_verified_payments", "ssl_auto_provisioning"
+  value       String   @db.Text
+  description String?
+  isEncrypted Boolean  @default(false)
+  updatedBy   String?
+  updatedAt   DateTime @updatedAt
+
+  @@index([key])
+  @@map("platform_settings")
+}
