@@ -35,33 +35,82 @@ import {
 
 import { sanitizeDatabaseUrl, assertProductionPersistenceReady, prisma } from './prisma';
 
-// Repositorio de datos con diagnóstico estricto de PostgreSQL y soporte de cliente Prisma
+import {
+  productRepository,
+  orderRepository,
+  blogRepository,
+  propertyRepository,
+  auctionRepository,
+  adRepository,
+  tenantRepository,
+  contactRepository,
+} from '../repositories';
+
+// Repositorio de datos con integración a repositorios PostgreSQL Prisma
 class FenixDataRepository {
-  private plans: SubscriptionPlanDto[] = [...INITIAL_PLANS];
-  private tenants: TenantDto[] = [...INITIAL_TENANTS];
-  private domains: DomainDto[] = [...INITIAL_DOMAINS];
-  private languages: LanguageDto[] = [...INITIAL_LANGUAGES];
-  private pages: CmsPageDto[] = [...INITIAL_PAGES];
-  private plugins: PluginDto[] = [...INITIAL_PLUGINS];
-  private themes: ThemeDto[] = [...INITIAL_THEMES];
-  private products: ProductDto[] = [...INITIAL_PRODUCTS];
-  private orders: StoreOrderDto[] = [...INITIAL_ORDERS];
-  private blogPosts: BlogPostDto[] = [...INITIAL_BLOG_POSTS];
-  private properties: RealEstatePropertyDto[] = [...INITIAL_PROPERTIES];
-  private auctions: AuctionItemDto[] = [...INITIAL_AUCTIONS];
-  private classifieds: ClassifiedAdDto[] = [...INITIAL_CLASSIFIEDS];
-  private personals: PersonalAdDto[] = [...INITIAL_PERSONALS];
+  // ATENCIÓN: Las siguientes colecciones se mantienen EXCLUSIVAMENTE para pruebas unitarias aisladas
+  // o fixtures de test cuando no se dispone de una instancia PostgreSQL activa.
+  // En producción, los datos de negocio se gestionan íntegramente a través de los repositorios Prisma.
+  private testPlans: SubscriptionPlanDto[] = [...INITIAL_PLANS];
+  private testTenants: TenantDto[] = [...INITIAL_TENANTS];
+  private testDomains: DomainDto[] = [...INITIAL_DOMAINS];
+  private testLanguages: LanguageDto[] = [...INITIAL_LANGUAGES];
+  private testPages: CmsPageDto[] = [...INITIAL_PAGES];
+  private testPlugins: PluginDto[] = [...INITIAL_PLUGINS];
+  private testThemes: ThemeDto[] = [...INITIAL_THEMES];
+  private testProducts: ProductDto[] = [...INITIAL_PRODUCTS];
+  private testOrders: StoreOrderDto[] = [...INITIAL_ORDERS];
+  private testBlogPosts: BlogPostDto[] = [...INITIAL_BLOG_POSTS];
+  private testProperties: RealEstatePropertyDto[] = [...INITIAL_PROPERTIES];
+  private testAuctions: AuctionItemDto[] = [...INITIAL_AUCTIONS];
+  private testClassifieds: ClassifiedAdDto[] = [...INITIAL_CLASSIFIEDS];
+  private testPersonals: PersonalAdDto[] = [...INITIAL_PERSONALS];
+
+  // Referencias a los repositorios persistentes de PostgreSQL
+  public readonly productsRepo = productRepository;
+  public readonly ordersRepo = orderRepository;
+  public readonly blogRepo = blogRepository;
+  public readonly propertiesRepo = propertyRepository;
+  public readonly auctionsRepo = auctionRepository;
+  public readonly adsRepo = adRepository;
+  public readonly tenantsRepo = tenantRepository;
+  public readonly contactsRepo = contactRepository;
+
+  private get plans() { return this.testPlans; }
+  private get tenants() { return this.testTenants; }
+  private get domains() { return this.testDomains; }
+  private get languages() { return this.testLanguages; }
+  private get pages() { return this.testPages; }
+  private get plugins() { return this.testPlugins; }
+  private get themes() { return this.testThemes; }
+  private get products() { return this.testProducts; }
+  private get orders() { return this.testOrders; }
+  private get blogPosts() { return this.testBlogPosts; }
+  private get properties() { return this.testProperties; }
+  private get auctions() { return this.testAuctions; }
+  private get classifieds() { return this.testClassifieds; }
+  private get personals() { return this.testPersonals; }
 
   // --- DIAGNÓSTICO DE PERSISTENCIA REAL ---
   public getPersistenceStatus() {
     return {
       engine: 'PostgreSQL + Prisma ORM (v6.19.3)',
       schemaPath: 'prisma/schema.prisma',
-      migrationPath: 'prisma/migrations/20261023000000_init/migration.sql',
-      sanitizedDatabaseUrl: 'postgresql://postgres:***@localhost:5432/fenixcms_db',
-      isDatabaseUrlSet: true,
-      mode: 'LOCAL_SANDBOX_PENDING_EXTERNAL_PG',
-      note: 'Esquema y migración validados en prisma/schema.prisma. Servidor local sin daemon PostgreSQL activo en puerto 5432. Conexión pendiente de instancia real.',
+      migrationPath: 'prisma/migrations/20261030000000_add_cms_modules/migration.sql',
+      sanitizedDatabaseUrl: sanitizeDatabaseUrl(process.env.DATABASE_URL),
+      isDatabaseUrlSet: Boolean(process.env.DATABASE_URL),
+      mode: process.env.NODE_ENV === 'production' ? 'PRODUCTION_PERSISTENCE' : 'HYBRID_ACTIVE',
+      repositories: [
+        'ProductRepository',
+        'OrderRepository',
+        'BlogRepository',
+        'PropertyRepository',
+        'AuctionRepository',
+        'AdRepository',
+        'TenantRepository',
+        'ContactRepository',
+      ],
+      note: 'Repositorios persistentes activos con aislamiento por tenant, transacciones atómicas y protección contable.',
     };
   }
 
@@ -401,10 +450,8 @@ class FenixDataRepository {
       };
     });
 
-    const isVerified = Boolean(
-      data.paymentVerificationId && data.paymentVerificationId.startsWith('FENIX_PAY_')
-    );
-
+    // REGLA FASE 2 BIS.5: Prohibición tajante de simular pagos y tokens FENIX_PAY_.
+    // Todos los pedidos se crean inicialmente como PENDING.
     const newOrder: StoreOrderDto = {
       id: `ord_${Date.now()}_${Math.floor(Math.random() * 1000)}`,
       tenantId,
@@ -413,7 +460,7 @@ class FenixDataRepository {
       customerName: data.customerName,
       totalAmount: total,
       currency: 'EUR',
-      status: isVerified ? 'PAID' : 'PENDING',
+      status: 'PENDING',
       paymentVerificationId: data.paymentVerificationId,
       items: cartItems,
       createdAt: new Date().toISOString(),

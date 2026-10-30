@@ -144,13 +144,10 @@ function StoreFrontContent() {
   const handleCheckout = async (customer: {
     name: string;
     email: string;
-    simulateVerifiedPayment: boolean;
   }) => {
     if (!activeTenant) throw new Error('No se pudo resolver el tenant');
 
-    const verificationCode = customer.simulateVerifiedPayment
-      ? `FENIX_PAY_${Date.now()}`
-      : undefined;
+    const idempotencyKey = `idem_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
 
     const order = fenixDb.createOrder(activeTenant.id, {
       customerName: customer.name,
@@ -159,7 +156,6 @@ function StoreFrontContent() {
         productId: item.productId,
         quantity: item.quantity,
       })),
-      paymentVerificationId: verificationCode,
     });
 
     setCartItems([]);

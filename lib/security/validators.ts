@@ -48,6 +48,7 @@ export const orderCreationSchema = z.object({
   customerEmail: z.string().email('Correo de cliente inválido'),
   customerName: z.string().min(2, 'El nombre del cliente es obligatorio'),
   items: z.array(orderItemSchema).min(1, 'El pedido debe incluir al menos un artículo'),
+  idempotencyKey: z.string().optional(),
   paymentVerificationId: z.string().optional(),
 });
 
@@ -55,6 +56,22 @@ export const auctionBidSchema = z.object({
   auctionId: z.string().min(1, 'El ID de lote de subasta es obligatorio'),
   bidAmount: z.number().positive('El importe de la puja debe ser un número positivo'),
   bidderName: z.string().min(2, 'El nombre del pujador es obligatorio'),
+});
+
+export const propertyInquirySchema = z.object({
+  name: z.string().min(2, 'El nombre es obligatorio'),
+  email: z.string().email('Correo electrónico no válido'),
+  phone: z.string().optional(),
+  message: z.string().min(5, 'El mensaje debe tener al menos 5 caracteres'),
+  propertyId: z.string().optional(),
+});
+
+export const contentReportSchema = z.object({
+  targetType: z.enum(['PRODUCT', 'BLOG_POST', 'PROPERTY', 'AUCTION', 'CLASSIFIED', 'PERSONAL']),
+  targetId: z.string().min(1, 'El ID del contenido es obligatorio'),
+  reporterEmail: z.string().email('Correo de contacto no válido'),
+  reason: z.string().min(3, 'El motivo de la denuncia es obligatorio'),
+  details: z.string().optional(),
 });
 
 // Validación estricta de subida de archivos (MIME, extensión y tamaño)

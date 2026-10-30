@@ -11,7 +11,7 @@ interface CartDrawerProps {
   items: CartItemDto[];
   onUpdateQuantity: (productId: string, quantity: number) => void;
   onRemoveItem: (productId: string) => void;
-  onCheckout: (customer: { name: string; email: string; simulateVerifiedPayment: boolean }) => Promise<{
+  onCheckout: (customer: { name: string; email: string }) => Promise<{
     orderNumber: string;
     status: string;
   }>;
@@ -27,7 +27,6 @@ export default function CartDrawer({
 }: CartDrawerProps) {
   const [customerName, setCustomerName] = React.useState('');
   const [customerEmail, setCustomerEmail] = React.useState('');
-  const [simulateVerified, setSimulateVerified] = React.useState(false);
   const [isSubmitting, setIsSubmitting] = React.useState(false);
   const [orderResult, setOrderResult] = React.useState<{ orderNumber: string; status: string } | null>(null);
   const [formError, setFormError] = React.useState<string | null>(null);
@@ -55,7 +54,6 @@ export default function CartDrawer({
       const res = await onCheckout({
         name: customerName,
         email: customerEmail,
-        simulateVerifiedPayment: simulateVerified,
       });
       setOrderResult(res);
     } catch (err: any) {
@@ -220,22 +218,17 @@ export default function CartDrawer({
                   />
                 </div>
 
-                {/* Switch para prueba de verificación de pago seguro */}
+                {/* Aviso de seguridad transaccional */}
                 <div className="rounded border border-zinc-800 bg-zinc-900/60 p-2.5">
-                  <label className="flex items-start gap-2 cursor-pointer">
-                    <input
-                      type="checkbox"
-                      checked={simulateVerified}
-                      onChange={(e) => setSimulateVerified(e.target.checked)}
-                      className="mt-0.5 rounded border-zinc-700 text-red-600 focus:ring-red-500"
-                    />
+                  <div className="flex items-start gap-2">
+                    <ShieldCheck className="h-4 w-4 text-emerald-400 mt-0.5 flex-shrink-0" />
                     <div className="text-[11px]">
-                      <span className="font-semibold text-zinc-200">Verificación Criptográfica Bancaria</span>
-                      <p className="text-zinc-500 text-[10px]">
-                        Si no se marca, el pedido queda en estado PENDING según la regla 5 de seguridad.
+                      <span className="font-semibold text-zinc-200">Precios e Inventario Validados por Servidor</span>
+                      <p className="text-zinc-500 text-[10px] mt-0.5">
+                        El pedido se registra en estado PENDING con reserva atómica de stock. La confirmación definitiva de pago requiere webhook o pasarela bancaria verificada.
                       </p>
                     </div>
-                  </label>
+                  </div>
                 </div>
 
                 <button

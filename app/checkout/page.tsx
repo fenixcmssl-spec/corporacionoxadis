@@ -35,7 +35,6 @@ function CheckoutContent() {
   const [adminName, setAdminName] = React.useState('');
   const [adminEmail, setAdminEmail] = React.useState('');
   const [adminPassword, setAdminPassword] = React.useState('');
-  const [simulateVerifiedPayment, setSimulateVerifiedPayment] = React.useState(true);
 
   const [isSubmitting, setIsSubmitting] = React.useState(false);
   const [errorMessage, setErrorMessage] = React.useState<string | null>(null);
@@ -103,7 +102,7 @@ function CheckoutContent() {
         tenantSlug: newTenant.slug,
         domain: newTenant.customDomain || `${newTenant.slug}.fenixcms.app`,
         licenseKey,
-        status: simulateVerifiedPayment ? 'ACTIVE' : 'TRIAL_PENDING_PAYMENT',
+        status: 'TRIAL_PENDING_PAYMENT',
       });
     } catch (err: any) {
       setErrorMessage(err.message || 'Error al aprovisionar el nuevo espacio de tenant.');
@@ -317,23 +316,17 @@ function CheckoutContent() {
 
                   {/* Regla de Seguridad de Pagos */}
                   <div className="rounded-xl border border-zinc-800 bg-zinc-950 p-4">
-                    <label className="flex items-start gap-3 cursor-pointer">
-                      <input
-                        type="checkbox"
-                        checked={simulateVerifiedPayment}
-                        onChange={(e) => setSimulateVerifiedPayment(e.target.checked)}
-                        className="mt-0.5 rounded border-zinc-700 text-red-600 focus:ring-red-500"
-                      />
+                    <div className="flex items-start gap-3">
+                      <ShieldCheck className="h-5 w-5 text-emerald-400 mt-0.5 flex-shrink-0" />
                       <div className="text-xs">
                         <span className="font-bold text-zinc-200">
-                          Confirmación de Pago Verificado (Pasarela Segura)
+                          Pasarela y Conciliación Bancaria Segura
                         </span>
                         <p className="text-zinc-500 text-[11px] mt-0.5 leading-relaxed">
-                          Cumple la Regla 5 de Seguridad: los estados de pago no se marcan completados
-                          sin verificación criptográfica bancaria del token de transacción.
+                          Cumple la Regla 5 de Seguridad: el espacio se aprovisiona en estado TRIAL_PENDING_PAYMENT hasta la confirmación efectiva de la pasarela de pagos.
                         </p>
                       </div>
-                    </label>
+                    </div>
                   </div>
 
                   <button

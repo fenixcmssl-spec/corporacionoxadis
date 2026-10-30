@@ -22,32 +22,42 @@ import {
   Clock,
   Layers,
 } from 'lucide-react';
-import { fenixDb } from '../../lib/db/client';
-import { TenantDto, ProductDto } from '../../lib/types/fenix';
+import { TenantDto, ProductDto, StoreOrderDto, DomainDto, CmsPageDto } from '../../lib/types/fenix';
 import { formatDate } from '../../lib/utils/format';
+
+interface SessionUser {
+  id: string;
+  email: string;
+  fullName: string;
+  userType: 'SUPERADMIN' | 'TENANT_USER';
+  tenantId?: string;
+  role?: string;
+}
 
 function TenantAdminContent() {
   const searchParams = useSearchParams();
-  const tenantParam = searchParams.get('tenant') || 'tenant_moda_01';
 
-  const tenants = fenixDb.getTenants();
-  const initialTenant = fenixDb.getTenantById(tenantParam);
+  // Estado de autenticación y sesión validada en servidor
+  const [sessionUser, setSessionUser] = React.useState<SessionUser | null>(null);
+  const [authLoading, setAuthLoading] = React.useState(true);
+  const [authError, setAuthError] = React.useState<string | null>(null);
+  const [httpStatus, setHttpStatus] = React.useState<number | null>(null);
 
-  const [activeTenant, setActiveTenant] = React.useState<TenantDto | undefined>(initialTenant);
+  // Espacio de tenant activo
+  const [activeTenant, setActiveTenant] = React.useState<TenantDto | null>(null);
+  const [tenants, setTenants] = React.useState<TenantDto[]>([]);
   const [activeSection, setActiveSection] = React.useState('overview');
 
-  // Tenant Isolated Data
-  const [products, setProducts] = React.useState<ProductDto[]>(() =>
-    initialTenant ? fenixDb.getAllProductsAdmin(initialTenant.id) : []
-  );
-  const [orders, setOrders] = React.useState(() => (initialTenant ? fenixDb.getOrders(initialTenant.id) : []));
-  const [plugins, setPlugins] = React.useState(() => (initialTenant ? fenixDb.getPlugins(initialTenant.id) : []));
-  const [themes, setThemes] = React.useState(() => (initialTenant ? fenixDb.getThemes(initialTenant.id) : []));
-  const [domains, setDomains] = React.useState(() => (initialTenant ? fenixDb.getDomains(initialTenant.id) : []));
-  const [languages, setLanguages] = React.useState(() => (initialTenant ? fenixDb.getLanguages(initialTenant.id) : []));
-  const [pages, setPages] = React.useState(() => (initialTenant ? fenixDb.getPages(initialTenant.id) : []));
+  // Datos aislados del tenant cargados exclusivamente vía API
+  const [products, setProducts] = React.useState<ProductDto[]>([]);
+  const [orders, setOrders] = React.useState<StoreOrderDto[]>([]);
+  const [plugins, setPlugins] = React.useState<any[]>([]);
+  const [themes, setThemes] = React.useState<any[]>([]);
+  const [domains, setDomains] = React.useState<DomainDto[]>([]);
+  const [languages, setLanguages] = React.useState<any[]>([]);
+  const [pages, setPages] = React.useState<CmsPageDto[]>([]);
 
-  // Add Product Form State
+  // Estados de formularios y acciones
   const [showAddProduct, setShowAddProduct] = React.useState(false);
   const [newTitle, setNewTitle] = React.useState('');
   const [newSku, setNewSku] = React.useState('');
@@ -55,89 +65,353 @@ function TenantAdminContent() {
   const [newStock, setNewStock] = React.useState('10');
   const [newCategory, setNewCategory] = React.useState('Catálogo General');
 
-  // Add Domain State
   const [newDomainHost, setNewDomainHost] = React.useState('');
+  const [isSubmitting, setIsSubmitting] = React.useState(false);
+  const [actionError, setActionError] = React.useState<string | null>(null);
+  const [actionSuccess, setActionSuccess] = React.useState<string | null>(null);
 
-  // Handle switching active tenant
+  // Carga paralela de recursos mediante APIs del servidor
+  const loadTenantData = React.useCallback(async (tenantId: string) => {
+    try {
+      // Metadatos del tenant
+      const infoRes = await fetch(`/api/admin/${tenantId}/info`);
+      if (!infoRes.ok) {
+        setHttpStatus(infoRes.status);
+        if (infoRes.status === 403) {
+          setAuthError('Aislamiento de Tenant Violado: Acceso no autorizado a datos de otra organización.');
+        } else if (infoRes.status === 401) {
+          setAuthError('Sesión requerida.');
+        } else if (infoRes.status === 503) {
+          setAuthError('Servicio de base de datos no disponible temporalmente.');
+        } else {
+          setAuthError('Espacio de organización no disponible o no encontrado.');
+        }
+        return;
+      }
+
+      const infoData = await infoRes.json();
+      const currentTenant = infoData.tenant;
+      setActiveTenant(currentTenant);
+      setTenants([currentTenant]);
+
+      // Consultas paralelas a recursos aislados
+      const [pRes, oRes, dRes, pgRes, plRes, thRes, lRes] = await Promise.all([
+        fetch(`/api/admin/${tenantId}/products`),
+        fetch(`/api/admin/${tenantId}/orders`),
+        fetch(`/api/admin/${tenantId}/domains`),
+        fetch(`/api/admin/${tenantId}/pages`),
+        fetch(`/api/admin/${tenantId}/plugins`),
+        fetch(`/api/admin/${tenantId}/themes`),
+        fetch(`/api/admin/${tenantId}/languages`),
+      ]);
+
+      if (pRes.ok) {
+        const pd = await pRes.json();
+        setProducts(pd.products || []);
+      }
+      if (oRes.ok) {
+        const od = await oRes.json();
+        setOrders(od.orders || []);
+      }
+      if (dRes.ok) {
+        const dd = await dRes.json();
+        setDomains(dd.domains || []);
+      }
+      if (pgRes.ok) {
+        const pgd = await pgRes.json();
+        setPages(pgd.pages || []);
+      }
+      if (plRes.ok) {
+        const pld = await plRes.json();
+        setPlugins(pld.plugins || []);
+      }
+      if (thRes.ok) {
+        const thd = await thRes.json();
+        setThemes(thd.themes || []);
+      }
+      if (lRes.ok) {
+        const ld = await lRes.json();
+        setLanguages(ld.languages || []);
+      }
+    } catch {
+      setActionError('Error de red al sincronizar los recursos del tenant.');
+    }
+  }, []);
+
+  // Carga de sesión y resolución de tenant basada en servidor
+  React.useEffect(() => {
+    let isMounted = true;
+
+    async function initializeAdminSession() {
+      setAuthLoading(true);
+      setAuthError(null);
+      setHttpStatus(null);
+
+      try {
+        // 1. Validar sesión persistente contra el endpoint seguro /api/auth/me
+        const authRes = await fetch('/api/auth/me');
+        if (!authRes.ok) {
+          if (isMounted) {
+            setHttpStatus(authRes.status);
+            setAuthError('Autenticación requerida para acceder al panel de administración.');
+            setAuthLoading(false);
+          }
+          return;
+        }
+
+        const authData = await authRes.json();
+        if (!authData.authenticated || !authData.user) {
+          if (isMounted) {
+            setHttpStatus(401);
+            setAuthError('Sesión no encontrada o credenciales expiradas.');
+            setAuthLoading(false);
+          }
+          return;
+        }
+
+        const user: SessionUser = authData.user;
+        if (isMounted) setSessionUser(user);
+
+        // 2. Determinar el tenant legítimo:
+        // En FenixCMS SaaS, un usuario ordinario no puede saltar a otro tenant cambiando ?tenant=
+        let targetTenantId: string | undefined = user.tenantId;
+
+        // Solo el SuperAdmin en modo soporte puede elegir tenant explícito mediante query param
+        if (user.userType === 'SUPERADMIN') {
+          targetTenantId = searchParams.get('tenant') || user.tenantId || 'tenant_moda_01';
+        }
+
+        if (!targetTenantId) {
+          if (isMounted) {
+            setHttpStatus(403);
+            setAuthError('La cuenta autenticada no tiene una organización asignada.');
+            setAuthLoading(false);
+          }
+          return;
+        }
+
+        // 3. Cargar datos del tenant a través de las APIs protegidas
+        if (isMounted) {
+          await loadTenantData(targetTenantId);
+        }
+      } catch {
+        if (isMounted) {
+          setHttpStatus(500);
+          setAuthError('Error de conexión con el servidor de autenticación.');
+        }
+      } finally {
+        if (isMounted) setAuthLoading(false);
+      }
+    }
+
+    initializeAdminSession();
+
+    return () => {
+      isMounted = false;
+    };
+  }, [searchParams, loadTenantData]);
+
+  // Cambio de tenant (solo permitido en modo soporte auditado de SuperAdmin)
   const handleTenantChange = (tenant: TenantDto) => {
+    if (sessionUser?.userType !== 'SUPERADMIN') return;
     setActiveTenant(tenant);
-    setProducts(fenixDb.getAllProductsAdmin(tenant.id));
-    setOrders(fenixDb.getOrders(tenant.id));
-    setPlugins(fenixDb.getPlugins(tenant.id));
-    setThemes(fenixDb.getThemes(tenant.id));
-    setDomains(fenixDb.getDomains(tenant.id));
-    setLanguages(fenixDb.getLanguages(tenant.id));
-    setPages(fenixDb.getPages(tenant.id));
+    loadTenantData(tenant.id);
   };
 
-  const handleTogglePlugin = (slug: string) => {
+  // Conmutar plugin vía API protegida
+  const handleTogglePlugin = async (slug: string) => {
     if (!activeTenant) return;
-    fenixDb.togglePlugin(activeTenant.id, slug);
-    setPlugins(fenixDb.getPlugins(activeTenant.id));
+    try {
+      const res = await fetch(`/api/admin/${activeTenant.id}/plugins`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ slug }),
+      });
+      if (res.ok) {
+        const plRes = await fetch(`/api/admin/${activeTenant.id}/plugins`);
+        if (plRes.ok) {
+          const d = await plRes.json();
+          setPlugins(d.plugins || []);
+        }
+      }
+    } catch {
+      setActionError('Error al conmutar estado del plugin.');
+    }
   };
 
-  const handleActivateTheme = (slug: string) => {
+  // Activar tema visual vía API protegida
+  const handleActivateTheme = async (slug: string) => {
     if (!activeTenant) return;
-    fenixDb.setActiveTheme(activeTenant.id, slug);
-    setThemes(fenixDb.getThemes(activeTenant.id));
+    try {
+      const res = await fetch(`/api/admin/${activeTenant.id}/themes`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ slug }),
+      });
+      if (res.ok) {
+        const thRes = await fetch(`/api/admin/${activeTenant.id}/themes`);
+        if (thRes.ok) {
+          const d = await thRes.json();
+          setThemes(d.themes || []);
+        }
+      }
+    } catch {
+      setActionError('Error al activar tema.');
+    }
   };
 
-  const handleCreateProduct = (e: React.FormEvent) => {
+  // Crear producto vía POST a API protegida
+  const handleCreateProduct = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!activeTenant || !newTitle.trim() || !newSku.trim() || !newPrice) return;
 
-    const created = fenixDb.createProduct(activeTenant.id, {
-      title: newTitle,
-      sku: newSku,
-      price: parseFloat(newPrice),
-      stock: parseInt(newStock, 10) || 0,
-      categoryId: 'cat_custom',
-      categoryName: newCategory,
-      description: 'Producto registrado desde el panel de administración FenixCMS.',
-      imageUrl: 'https://picsum.photos/seed/' + newSku + '/600/600',
-      isPublished: true,
-    });
+    setIsSubmitting(true);
+    setActionError(null);
+    setActionSuccess(null);
 
-    setProducts(fenixDb.getAllProductsAdmin(activeTenant.id));
-    setShowAddProduct(false);
-    setNewTitle('');
-    setNewSku('');
-    setNewPrice('');
+    try {
+      const res = await fetch(`/api/admin/${activeTenant.id}/products`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          title: newTitle.trim(),
+          sku: newSku.trim(),
+          price: parseFloat(newPrice),
+          stock: parseInt(newStock, 10) || 0,
+          categoryName: newCategory,
+          description: 'Producto registrado desde el panel de administración FenixCMS.',
+        }),
+      });
+
+      const data = await res.json();
+      if (!res.ok) {
+        setActionError(data.error || 'Error al guardar el producto.');
+        return;
+      }
+
+      setActionSuccess(`Producto '${newTitle}' creado y registrado con éxito.`);
+      setShowAddProduct(false);
+      setNewTitle('');
+      setNewSku('');
+      setNewPrice('');
+      setNewStock('10');
+
+      // Refrescar catálogo a través de la API
+      const pRes = await fetch(`/api/admin/${activeTenant.id}/products`);
+      if (pRes.ok) {
+        const pd = await pRes.json();
+        setProducts(pd.products || []);
+      }
+    } catch {
+      setActionError('Error al enviar la petición de creación de producto.');
+    } finally {
+      setIsSubmitting(false);
+    }
   };
 
-  const handleAddDomain = (e: React.FormEvent) => {
+  // Vincular dominio vía POST a API protegida
+  const handleAddDomain = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!activeTenant || !newDomainHost.trim()) return;
-    fenixDb.addDomain(activeTenant.id, newDomainHost.trim());
-    setDomains(fenixDb.getDomains(activeTenant.id));
-    setNewDomainHost('');
+
+    setIsSubmitting(true);
+    setActionError(null);
+    setActionSuccess(null);
+
+    try {
+      const res = await fetch(`/api/admin/${activeTenant.id}/domains`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ hostname: newDomainHost.trim() }),
+      });
+
+      const data = await res.json();
+      if (!res.ok) {
+        setActionError(data.error || 'Error al vincular el dominio.');
+        return;
+      }
+
+      setActionSuccess(`Dominio '${newDomainHost.trim()}' vinculado con éxito para verificación DNS.`);
+      setNewDomainHost('');
+
+      // Refrescar dominios a través de la API
+      const dRes = await fetch(`/api/admin/${activeTenant.id}/domains`);
+      if (dRes.ok) {
+        const dd = await dRes.json();
+        setDomains(dd.domains || []);
+      }
+    } catch {
+      setActionError('Error al vincular dominio.');
+    } finally {
+      setIsSubmitting(false);
+    }
   };
 
-  if (!activeTenant) {
+  // Vista de carga inicial
+  if (authLoading) {
+    return (
+      <div className="min-h-screen bg-black text-zinc-100 flex flex-col">
+        <Navbar />
+        <main className="flex-1 flex items-center justify-center p-6">
+          <div className="flex flex-col items-center gap-3">
+            <div className="h-8 w-8 animate-spin rounded-full border-2 border-red-500 border-t-transparent" />
+            <p className="text-xs font-mono text-zinc-400">Verificando sesión persistente y permisos de tenant...</p>
+          </div>
+        </main>
+        <Footer />
+      </div>
+    );
+  }
+
+  // Vista de error de acceso (401, 403, 503 o tenant no autorizado)
+  if (!activeTenant || authError) {
+    const is401 = httpStatus === 401;
+    const is403 = httpStatus === 403;
+    const is503 = httpStatus === 503;
+
     return (
       <div className="min-h-screen bg-black text-zinc-100 flex flex-col">
         <Navbar />
         <main className="flex-1 flex items-center justify-center p-6">
           <div className="w-full max-w-md rounded-2xl border border-zinc-800 bg-zinc-950 p-8 text-center shadow-2xl">
-            <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-2xl bg-red-950/40 border border-red-800 text-red-500 mb-6">
+            <div className={`mx-auto flex h-14 w-14 items-center justify-center rounded-2xl border mb-6 ${
+              is401 ? 'bg-amber-950/40 border-amber-800 text-amber-500' : 'bg-red-950/40 border-red-800 text-red-500'
+            }`}>
               <AlertCircle className="h-7 w-7" />
             </div>
-            <span className="text-[10px] font-mono font-bold uppercase tracking-widest text-red-400 bg-red-950/80 border border-red-800 px-2 py-0.5 rounded">
-              Tenant No Encontrado
+
+            <span className={`text-[10px] font-mono font-bold uppercase tracking-widest px-2 py-0.5 rounded border ${
+              is401
+                ? 'text-amber-400 bg-amber-950/80 border-amber-800'
+                : 'text-red-400 bg-red-950/80 border-red-800'
+            }`}>
+              {is401 ? 'HTTP 401 &bull; Autenticación Requerida' : is403 ? 'HTTP 403 &bull; Aislamiento de Tenant' : is503 ? 'HTTP 503 &bull; Persistencia Offline' : 'Acceso Restringido'}
             </span>
+
             <h1 className="mt-3 text-2xl font-black text-white">
-              Espacio Inexistente o No Autorizado
+              {is401 ? 'Inicia Sesión en tu Organización' : is403 ? 'Acceso No Autorizado' : 'Espacio no disponible'}
             </h1>
+
             <p className="mt-2 text-xs text-zinc-400 leading-relaxed">
-              El identificador de tenant solicitado no corresponde a ningún cliente registrado o carece de permisos de sesión verificados.
+              {authError || 'El espacio solicitado requiere credenciales de organización validadas en el servidor.'}
             </p>
-            <div className="mt-6">
-              <Link
-                href="/admin?tenant=tenant_moda_01"
-                className="inline-flex rounded-xl bg-red-600 px-5 py-2.5 text-xs font-bold text-white hover:bg-red-500 transition"
-              >
-                Acceder a Tenant Verificado
-              </Link>
+
+            <div className="mt-6 flex flex-col sm:flex-row gap-3 justify-center">
+              {is401 ? (
+                <Link
+                  href="/login"
+                  className="inline-flex items-center justify-center rounded-xl bg-red-600 px-5 py-2.5 text-xs font-bold text-white hover:bg-red-500 transition"
+                >
+                  Ir al Acceso de Cliente
+                </Link>
+              ) : (
+                <Link
+                  href="/"
+                  className="inline-flex items-center justify-center rounded-xl bg-zinc-800 px-5 py-2.5 text-xs font-bold text-zinc-200 hover:bg-zinc-700 transition"
+                >
+                  Volver al Inicio
+                </Link>
+              )}
             </div>
           </div>
         </main>
@@ -158,10 +432,25 @@ function TenantAdminContent() {
           onSelectTenant={handleTenantChange}
           activeSection={activeSection}
           onSelectSection={setActiveSection}
+          isSuperAdmin={sessionUser?.userType === 'SUPERADMIN'}
         />
 
         {/* Main Content Area */}
         <main className="flex-1 p-6 sm:p-8 lg:p-10 max-w-6xl">
+          {/* Action notification banners */}
+          {actionSuccess && (
+            <div className="mb-6 rounded-xl border border-emerald-800 bg-emerald-950/40 p-4 text-xs font-semibold text-emerald-300 flex items-center justify-between">
+              <span>{actionSuccess}</span>
+              <button type="button" onClick={() => setActionSuccess(null)} className="text-emerald-400 hover:text-white">&times;</button>
+            </div>
+          )}
+          {actionError && (
+            <div className="mb-6 rounded-xl border border-red-800 bg-red-950/40 p-4 text-xs font-semibold text-red-300 flex items-center justify-between">
+              <span>{actionError}</span>
+              <button type="button" onClick={() => setActionError(null)} className="text-red-400 hover:text-white">&times;</button>
+            </div>
+          )}
+
           {/* Top Info Bar */}
           <div className="flex flex-col sm:flex-row sm:items-center justify-between pb-6 border-b border-zinc-800 gap-4 mb-8">
             <div>

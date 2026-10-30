@@ -35,23 +35,51 @@ export default function TiendaInmobiliariaView({
   const [visitEmail, setVisitEmail] = React.useState('');
   const [visitDate, setVisitDate] = React.useState('');
   const [visitSent, setVisitSent] = React.useState(false);
+  const [isSubmitting, setIsSubmitting] = React.useState(false);
+  const [submitError, setSubmitError] = React.useState<string | null>(null);
 
   const filteredProperties =
     operationFilter === 'TODOS'
       ? properties
       : properties.filter((p) => p.operation === operationFilter);
 
-  const handleSendVisit = (e: React.FormEvent) => {
+  const handleSendVisit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!visitName || !visitEmail) return;
-    setVisitSent(true);
-    setTimeout(() => {
-      setVisitSent(false);
-      setVisitName('');
-      setVisitEmail('');
-      setVisitDate('');
-      setSelectedProperty(null);
-    }, 2500);
+    if (!visitName || !visitEmail || !selectedProperty) return;
+    setSubmitError(null);
+    setIsSubmitting(true);
+
+    try {
+      const hostname = typeof window !== 'undefined' ? window.location.hostname : 'modaurbana.fenixcms.app';
+      const res = await fetch(`/api/public/${hostname}/inquiries`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          name: visitName.trim(),
+          email: visitEmail.trim(),
+          propertyId: selectedProperty.id,
+          message: `Solicitud de visita para la propiedad: ${selectedProperty.title} (${selectedProperty.city}). Fecha preferida: ${visitDate || 'Sin especificar'}.`,
+        }),
+      });
+
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data.success) {
+        throw new Error(data.error || data.message || 'Error al registrar la solicitud de visita en el servidor.');
+      }
+
+      setVisitSent(true);
+      setTimeout(() => {
+        setVisitSent(false);
+        setVisitName('');
+        setVisitEmail('');
+        setVisitDate('');
+        setSelectedProperty(null);
+      }, 3500);
+    } catch (err: any) {
+      setSubmitError(err.message || 'No se pudo guardar la solicitud. Por favor verifique sus datos.');
+    } finally {
+      setIsSubmitting(false);
+    }
   };
 
   return (
@@ -270,6 +298,12 @@ export default function TiendaInmobiliariaView({
                 <span>Solicitar Cita de Visita o Información</span>
               </h4>
 
+              {submitError && (
+                <div className="p-3 rounded-lg bg-red-950/80 border border-red-800 text-red-300 text-xs">
+                  {submitError}
+                </div>
+              )}
+
               {visitSent ? (
                 <div className="p-3 rounded-lg bg-emerald-950 border border-emerald-800 text-emerald-300 text-xs flex items-center gap-2">
                   <CheckCircle2 className="h-4 w-4" />
@@ -295,10 +329,11 @@ export default function TiendaInmobiliariaView({
                   />
                   <button
                     type="submit"
-                    className="flex items-center justify-center gap-1.5 rounded-lg bg-blue-600 px-4 py-2 text-xs font-bold text-white hover:bg-blue-500 transition shadow"
+                    disabled={isSubmitting}
+                    className="flex items-center justify-center gap-1.5 rounded-lg bg-blue-600 px-4 py-2 text-xs font-bold text-white hover:bg-blue-500 transition shadow disabled:opacity-50"
                   >
                     <Send className="h-3.5 w-3.5" />
-                    <span>Enviar Solicitud</span>
+                    <span>{isSubmitting ? 'Guardando...' : 'Enviar Solicitud'}</span>
                   </button>
                 </form>
               )}

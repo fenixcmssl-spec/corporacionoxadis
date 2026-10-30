@@ -22,6 +22,7 @@ interface TenantSidebarProps {
   onSelectTenant: (tenant: TenantDto) => void;
   activeSection: string;
   onSelectSection: (section: string) => void;
+  isSuperAdmin?: boolean;
 }
 
 export default function TenantSidebar({
@@ -30,6 +31,7 @@ export default function TenantSidebar({
   onSelectTenant,
   activeSection,
   onSelectSection,
+  isSuperAdmin = false,
 }: TenantSidebarProps) {
   const menuItems = [
     { id: 'overview', label: 'Visión General', icon: Layers },
@@ -46,28 +48,46 @@ export default function TenantSidebar({
   return (
     <aside className="w-full md:w-64 border-b md:border-b-0 md:border-r border-zinc-800 bg-zinc-950 p-4 flex flex-col justify-between">
       <div>
-        {/* Tenant Switcher Selector */}
+        {/* Tenant Space: Fijo para usuarios ordinarios, auditado para soporte de superadministrador */}
         <div className="mb-6 rounded-lg border border-zinc-800 bg-zinc-900/90 p-3">
-          <label className="block text-[10px] font-bold uppercase tracking-wider text-zinc-400 mb-1.5 flex items-center justify-between">
-            <span>Espacio de Tenant</span>
-            <span className="text-emerald-400 font-mono text-[9px] bg-emerald-950/60 border border-emerald-800/60 px-1 rounded">
-              AISLADO
+          <div className="flex items-center justify-between mb-1.5">
+            <span className="text-[10px] font-bold uppercase tracking-wider text-zinc-400">
+              Espacio de Tenant
             </span>
-          </label>
-          <select
-            value={activeTenant.id}
-            onChange={(e) => {
-              const selected = tenants.find((t) => t.id === e.target.value);
-              if (selected) onSelectTenant(selected);
-            }}
-            className="w-full rounded border border-zinc-700 bg-zinc-800 px-2 py-1.5 text-xs font-semibold text-white focus:border-red-500 focus:outline-none"
-          >
-            {tenants.map((t) => (
-              <option key={t.id} value={t.id}>
-                {t.name} ({t.slug})
-              </option>
-            ))}
-          </select>
+            {isSuperAdmin ? (
+              <span className="text-amber-400 font-mono text-[9px] bg-amber-950/60 border border-amber-800/60 px-1 rounded">
+                SOPORTE AUDITADO
+              </span>
+            ) : (
+              <span className="text-emerald-400 font-mono text-[9px] bg-emerald-950/60 border border-emerald-800/60 px-1 rounded flex items-center gap-1">
+                <ShieldCheck className="h-2.5 w-2.5" />
+                ASIGNADO
+              </span>
+            )}
+          </div>
+
+          {isSuperAdmin && tenants.length > 1 ? (
+            <select
+              value={activeTenant.id}
+              onChange={(e) => {
+                const selected = tenants.find((t) => t.id === e.target.value);
+                if (selected) onSelectTenant(selected);
+              }}
+              className="w-full rounded border border-amber-700/60 bg-zinc-800 px-2 py-1.5 text-xs font-semibold text-white focus:border-amber-500 focus:outline-none"
+            >
+              {tenants.map((t) => (
+                <option key={t.id} value={t.id}>
+                  {t.name} ({t.slug})
+                </option>
+              ))}
+            </select>
+          ) : (
+            <div className="w-full rounded border border-zinc-800 bg-zinc-800/60 px-2.5 py-1.5 text-xs font-bold text-white flex items-center justify-between">
+              <span className="truncate">{activeTenant.name}</span>
+              <span className="text-[10px] text-zinc-400 font-mono">({activeTenant.slug})</span>
+            </div>
+          )}
+
           <p className="mt-1.5 text-[10px] font-mono text-zinc-400 truncate">
             {activeTenant.customDomain}
           </p>

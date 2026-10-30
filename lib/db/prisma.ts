@@ -19,38 +19,36 @@ export function sanitizeDatabaseUrl(url?: string | null): string {
   }
 }
 
+export class DatabaseConnectionError extends Error {
+  public statusCode = 503;
+  public code = 'DATABASE_UNAVAILABLE';
+  constructor(message = 'Base de datos PostgreSQL no disponible o no accesible.') {
+    super(message);
+    this.name = 'DatabaseConnectionError';
+  }
+}
+
 /**
- * Singleton de PrismaClient para evitar agotamiento del pool de conexiones en desarrollo con Next.js
+ * Singleton de PrismaClient para evitar agotamiento del pool de conexiones en desarrollo con Next.js.
+ * Se prohíbe el uso de proxies ficticios que simulen lecturas o escrituras satisfactorias si falla la base de datos.
  */
 const globalForPrisma = globalThis as unknown as {
   prismaClientInstance?: PrismaClient;
 };
 
 let prismaInstance: PrismaClient;
-try {
-  prismaInstance =
-    globalForPrisma.prismaClientInstance ??
-    new PrismaClient({
-      log: process.env.NODE_ENV === 'development' ? ['warn', 'error'] : ['error'],
-    });
-} catch {
-  console.warn('[AI Studio] Database not connected — using mock');
-  const noOp = {
-    findMany: async () => [],
-    findFirst: async () => null,
-    findUnique: async () => null,
-    create: async (d: any) => d?.data ?? {},
-    update: async (d: any) => d?.data ?? {},
-    delete: async () => ({}),
-  };
-  prismaInstance = new Proxy({}, { get: () => noOp }) as any;
+if (globalForPrisma.prismaClientInstance) {
+  prismaInstance = globalForPrisma.prismaClientInstance;
+} else {
+  prismaInstance = new PrismaClient({
+    log: process.env.NODE_ENV === 'development' ? ['warn', 'error'] : ['error'],
+  });
+  if (process.env.NODE_ENV !== 'production') {
+    globalForPrisma.prismaClientInstance = prismaInstance;
+  }
 }
 
 export const prisma = prismaInstance;
-
-if (process.env.NODE_ENV !== 'production') {
-  globalForPrisma.prismaClientInstance = prisma;
-}
 
 export type DatabaseConnectionStatus =
   | 'CONNECTED'
@@ -136,3 +134,32 @@ export function assertProductionPersistenceReady(): void {
     }
   }
 }
+
+/**
+ * Ejecuta una operación de persistencia con Prisma, capturando fallos de conectividad con PostgreSQL
+ * y lanzando un DatabaseConnectionError controlado en lugar de fallar silenciosamente o con proxies.
+ */
+export async function executeWithDatabase<T>(operation: () => Promise<T>): Promise<T> {
+  try {
+    return await operation();
+  } catch (error: any) {
+    const msg = error?.message || '';
+    const code = error?.code || '';
+    if (
+      code === 'P1001' ||
+      code === 'P1000' ||
+      code === 'P1002' ||
+      code === 'P1003' ||
+      msg.includes('ECONNREFUSED') ||
+      msg.includes("Can't reach database server") ||
+      msg.includes('connection timed out') ||
+      msg.includes('Connection refused')
+    ) {
+      throw new DatabaseConnectionError(
+        `Error de persistencia: Servidor PostgreSQL inaccesible o no disponible (${code ? `código ${code}: ` : ''}${msg.split('\n')[0]}).`
+      );
+    }
+    throw error;
+  }
+}
+

@@ -2,7 +2,7 @@
 
 import React from 'react';
 import Image from 'next/image';
-import { Users, ShieldCheck, MapPin, Tag, ArrowRight, MessageSquare, Send, CheckCircle2 } from 'lucide-react';
+import { Users, ShieldCheck, MapPin, Tag, ArrowRight, MessageSquare, Send, CheckCircle2, Flag, AlertTriangle } from 'lucide-react';
 import { PersonalAdDto } from '../../lib/types/fenix';
 import ItemDetailModal from './ItemDetailModal';
 
@@ -21,17 +21,88 @@ export default function TiendaPersonalesView({
   const [messageText, setMessageText] = React.useState('');
   const [senderContact, setSenderContact] = React.useState('');
   const [msgSent, setMsgSent] = React.useState(false);
+  const [isSubmitting, setIsSubmitting] = React.useState(false);
+  const [submitError, setSubmitError] = React.useState<string | null>(null);
+  const [reportReason, setReportReason] = React.useState('');
+  const [reportEmail, setReportEmail] = React.useState('');
+  const [showReportForm, setShowReportForm] = React.useState(false);
+  const [reportSent, setReportSent] = React.useState(false);
 
-  const handleSendMessage = (e: React.FormEvent) => {
+  const handleSendMessage = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!messageText || !senderContact) return;
-    setMsgSent(true);
-    setTimeout(() => {
-      setMsgSent(false);
-      setMessageText('');
-      setSenderContact('');
-      setSelectedPersonal(null);
-    }, 2500);
+    if (!messageText || !senderContact || !selectedPersonal) return;
+    setSubmitError(null);
+    setIsSubmitting(true);
+
+    try {
+      const hostname = typeof window !== 'undefined' ? window.location.hostname : 'modaurbana.fenixcms.app';
+      const res = await fetch(`/api/public/${hostname}/inquiries`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          name: 'Usuario Interesado',
+          email: senderContact.includes('@') ? senderContact.trim() : 'contacto@privado.es',
+          phone: !senderContact.includes('@') ? senderContact.trim() : undefined,
+          message: `Mensaje para anuncio personal #${selectedPersonal.id} (@${selectedPersonal.contactNickname}): ${messageText.trim()}`,
+        }),
+      });
+
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data.success) {
+        throw new Error(data.error || data.message || 'Error al transmitir el mensaje.');
+      }
+
+      setMsgSent(true);
+      setTimeout(() => {
+        setMsgSent(false);
+        setMessageText('');
+        setSenderContact('');
+        setSelectedPersonal(null);
+      }, 3000);
+    } catch (err: any) {
+      setSubmitError(err.message || 'No se pudo enviar el mensaje. Por favor intente más tarde.');
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  const handleSendReport = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!reportReason || !reportEmail || !selectedPersonal) return;
+    setSubmitError(null);
+    setIsSubmitting(true);
+
+    try {
+      const hostname = typeof window !== 'undefined' ? window.location.hostname : 'modaurbana.fenixcms.app';
+      const res = await fetch(`/api/public/${hostname}/reports`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          targetType: 'PERSONAL',
+          targetId: selectedPersonal.id,
+          reporterEmail: reportEmail.trim(),
+          reason: reportReason.trim(),
+          details: `Denuncia sobre el anuncio personal '${selectedPersonal.title}'`,
+        }),
+      });
+
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data.success) {
+        throw new Error(data.error || data.message || 'Error al enviar la denuncia.');
+      }
+
+      setReportSent(true);
+      setTimeout(() => {
+        setReportSent(false);
+        setShowReportForm(false);
+        setReportReason('');
+        setReportEmail('');
+      }, 3000);
+    } catch (err: any) {
+      setSubmitError(err.message || 'Error al registrar la denuncia.');
+    } finally {
+      setIsSubmitting(false);
+    }
   };
 
   return (
@@ -47,13 +118,13 @@ export default function TiendaPersonalesView({
             Comunidad &amp; Contactos Personales de {tenantName}
           </h2>
           <p className="mt-1 text-xs text-zinc-400">
-            Conexiones, actividades colaborativas y perfiles moderados y verificados.
+            Conexiones, actividades colaborativas y perfiles moderados con privacidad por defecto.
           </p>
         </div>
 
         <div className="flex items-center gap-2 text-xs text-zinc-400 font-mono">
-          <ShieldCheck className="h-4 w-4 text-emerald-400" />
-          <span>Moderación y Perfiles Verificados</span>
+          <ShieldCheck className="h-4 w-4 text-pink-400" />
+          <span>Privacidad de Contacto &amp; Moderación</span>
         </div>
       </div>
 
@@ -87,11 +158,6 @@ export default function TiendaPersonalesView({
                   <div className="absolute top-2.5 left-2.5 rounded bg-pink-600 text-white px-2 py-0.5 text-[10px] font-mono font-bold uppercase shadow-sm">
                     {per.category}
                   </div>
-                  {per.isVerified && (
-                    <div className="absolute bottom-2.5 left-2.5 rounded bg-emerald-950/90 border border-emerald-700 px-2 py-0.5 text-[10px] font-mono font-bold text-emerald-300 flex items-center gap-1 backdrop-blur-sm">
-                      <ShieldCheck className="h-3 w-3" /> Verificado
-                    </div>
-                  )}
                 </div>
 
                 <div className="flex items-center justify-between text-xs text-zinc-400 mb-2 font-mono">

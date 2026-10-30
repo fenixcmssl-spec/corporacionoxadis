@@ -120,6 +120,154 @@ export class TenantIsolatedService {
     enforceTenantOwnership(context, targetTenantId, 'tenant:pages:read');
     return fenixDb.getPages(targetTenantId);
   }
+
+  /**
+   * Obtiene la información general y metadatos del tenant.
+   */
+  public getTenantInfo(context: SecurityContext, targetTenantId: string) {
+    enforceTenantOwnership(context, targetTenantId);
+    const tenant = fenixDb.getTenantById(targetTenantId);
+    if (!tenant) {
+      throw new Error(`Tenant con ID '${targetTenantId}' no encontrado.`);
+    }
+    return tenant;
+  }
+
+  /**
+   * Obtiene los plugins instalados y su estado en el tenant.
+   */
+  public getPlugins(context: SecurityContext, targetTenantId: string) {
+    enforceTenantOwnership(context, targetTenantId);
+    return fenixDb.getPlugins(targetTenantId);
+  }
+
+  /**
+   * Activa o desactiva un plugin en el tenant.
+   */
+  public togglePlugin(context: SecurityContext, targetTenantId: string, slug: string) {
+    enforceTenantOwnership(context, targetTenantId, 'tenant:domains:manage');
+    const toggled = fenixDb.togglePlugin(targetTenantId, slug);
+    securityAudit.log({
+      action: 'TENANT_PLUGIN_TOGGLED',
+      actorId: context.userId,
+      actorEmail: context.email,
+      actorRole: context.role,
+      targetTenantId,
+      details: `Plugin '${slug}' conmutado por usuario autorizado.`,
+    });
+    return toggled;
+  }
+
+  /**
+   * Obtiene los temas disponibles y activos para el tenant.
+   */
+  public getThemes(context: SecurityContext, targetTenantId: string) {
+    enforceTenantOwnership(context, targetTenantId);
+    return fenixDb.getThemes(targetTenantId);
+  }
+
+  /**
+   * Activa un tema específico para el tenant.
+   */
+  public setActiveTheme(context: SecurityContext, targetTenantId: string, slug: string) {
+    enforceTenantOwnership(context, targetTenantId, 'tenant:domains:manage');
+    const theme = fenixDb.setActiveTheme(targetTenantId, slug);
+    securityAudit.log({
+      action: 'TENANT_THEME_ACTIVATED',
+      actorId: context.userId,
+      actorEmail: context.email,
+      actorRole: context.role,
+      targetTenantId,
+      details: `Tema visual '${slug}' activado para la organización.`,
+    });
+    return theme;
+  }
+
+  /**
+   * Obtiene los idiomas configurados para el tenant.
+   */
+  public getLanguages(context: SecurityContext, targetTenantId: string) {
+    enforceTenantOwnership(context, targetTenantId);
+    return fenixDb.getLanguages(targetTenantId);
+  }
+
+  // ==========================================================================
+  // OPERACIONES PERSISTENTES CON PRISMA (POSTGRESQL CON ENFORCEMENT SERVER-SIDE)
+  // ==========================================================================
+
+  public async getProductsAsync(context: SecurityContext, targetTenantId: string, params?: { page?: number; pageSize?: number }) {
+    enforceTenantOwnership(context, targetTenantId, 'tenant:products:read');
+    return fenixDb.productsRepo.list({ tenantId: targetTenantId, ...params });
+  }
+
+  public async createProductAsync(
+    context: SecurityContext,
+    targetTenantId: string,
+    productData: Parameters<typeof fenixDb.productsRepo.create>[1]
+  ) {
+    enforceTenantOwnership(context, targetTenantId, 'tenant:products:write');
+    const created = await fenixDb.productsRepo.create(targetTenantId, productData);
+
+    securityAudit.log({
+      action: 'TENANT_PRODUCT_CREATED',
+      actorId: context.userId,
+      actorEmail: context.email,
+      actorRole: context.role,
+      targetTenantId,
+      details: `Producto '${created.title}' (SKU: ${created.sku}) creado en PostgreSQL.`,
+      metadata: { productId: created.id, price: Number(created.price), stock: created.stock },
+    });
+
+    return created;
+  }
+
+  public async getOrdersAsync(context: SecurityContext, targetTenantId: string, params?: { page?: number; pageSize?: number }) {
+    enforceTenantOwnership(context, targetTenantId, 'tenant:orders:read');
+    return fenixDb.ordersRepo.list({ tenantId: targetTenantId, ...params });
+  }
+
+  public async createOrderAsync(
+    context: SecurityContext,
+    targetTenantId: string,
+    orderData: Parameters<typeof fenixDb.ordersRepo.create>[1]
+  ) {
+    enforceTenantOwnership(context, targetTenantId, 'tenant:orders:manage');
+    const created = await fenixDb.ordersRepo.create(targetTenantId, orderData);
+
+    securityAudit.log({
+      action: 'TENANT_ORDER_CREATED',
+      actorId: context.userId,
+      actorEmail: context.email,
+      actorRole: context.role,
+      targetTenantId,
+      details: `Pedido #${created.orderNumber} por importe de ${created.totalAmount} € registrado en PostgreSQL.`,
+      metadata: { orderId: created.id, orderNumber: created.orderNumber },
+    });
+
+    return created;
+  }
+
+  public async getDomainsAsync(context: SecurityContext, targetTenantId: string) {
+    enforceTenantOwnership(context, targetTenantId, 'tenant:domains:manage');
+    return fenixDb.tenantsRepo.getDomains(targetTenantId);
+  }
+
+  public async addDomainAsync(context: SecurityContext, targetTenantId: string, hostname: string) {
+    enforceTenantOwnership(context, targetTenantId, 'tenant:domains:manage');
+    const domain = await fenixDb.tenantsRepo.addDomain(targetTenantId, hostname);
+
+    securityAudit.log({
+      action: 'TENANT_DOMAIN_LINKED',
+      actorId: context.userId,
+      actorEmail: context.email,
+      actorRole: context.role,
+      targetTenantId,
+      details: `Dominio '${hostname}' registrado en base de datos PostgreSQL.`,
+      metadata: { domainId: domain.id, hostname },
+    });
+
+    return domain;
+  }
 }
 
 export const tenantIsolatedService = new TenantIsolatedService();

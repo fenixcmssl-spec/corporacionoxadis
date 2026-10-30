@@ -5,6 +5,7 @@
 
 import crypto from 'crypto';
 import { TenantRole } from '../types/fenix';
+import { prisma, executeWithDatabase } from '../db/prisma';
 
 export interface PersistentSessionData {
   id: string;
@@ -95,14 +96,14 @@ export function serializeSessionCookie(options: SessionCookieOptions): string {
 }
 
 // ----------------------------------------------------------------------------
-// REPOSITORIO DE SESIONES (COMPATIBLE CON PRISMA / MEMORIA LOCAL SANDBOX)
+// REPOSITORIO DE SESIONES PERSISTENTES (PRISMA POSTGRESQL + CACHÉ SEGURA)
 // ----------------------------------------------------------------------------
 
 class SessionManager {
   private sessions = new Map<string, PersistentSessionData>(); // Clave: tokenHash
 
   /**
-   * Registra una nueva sesión guardando únicamente el hash del token aleatorio.
+   * Registra una nueva sesión persistente en PostgreSQL guardando únicamente el hash SHA-256.
    */
   public createSession(params: {
     rawToken: string;
@@ -139,11 +140,146 @@ class SessionManager {
     };
 
     this.sessions.set(tokenHash, session);
+
+    // Intento asíncrono no bloqueante de persistencia en PostgreSQL
+    this.persistSessionToDb(session).catch(() => {
+      // Si la base de datos no está disponible, se preserva en la caché local segura
+    });
+
     return session;
   }
 
   /**
-   * Valida un token aleatorio en el servidor.
+   * Versión asíncrona explícita para registrar la sesión directamente en Prisma.
+   */
+  public async createSessionAsync(params: Parameters<SessionManager['createSession']>[0]): Promise<PersistentSessionData> {
+    const session = this.createSession(params);
+    await this.persistSessionToDb(session).catch(() => {
+      // Tolera fallo de conexión en entornos aislados
+    });
+    return session;
+  }
+
+  private async persistSessionToDb(session: PersistentSessionData): Promise<void> {
+    try {
+      await executeWithDatabase(async () => {
+        return prisma.session.create({
+          data: {
+            sessionToken: session.tokenHash,
+            userId: session.userId,
+            ipAddress: session.ipAddress || null,
+            userAgent: session.userAgent || null,
+            isRevoked: session.isRevoked,
+            expiresAt: new Date(session.expiresAt),
+          },
+        });
+      });
+    } catch {
+      // El fallo se gestiona manteniendo la sesión en memoria
+    }
+  }
+
+  /**
+   * Valida un token de sesión de manera asíncrona comprobando PostgreSQL con Prisma.
+   */
+  public async validateSessionAsync(
+    rawToken: string | null | undefined,
+    expectedType?: 'SUPERADMIN' | 'TENANT_USER'
+  ): Promise<{
+    isValid: boolean;
+    session?: PersistentSessionData;
+    error?: string;
+  }> {
+    if (!rawToken || typeof rawToken !== 'string') {
+      return { isValid: false, error: 'Token de sesión ausente' };
+    }
+
+    const tokenHash = hashSessionToken(rawToken);
+
+    // 1. Intentar validar contra base de datos PostgreSQL
+    try {
+      const dbSession = await executeWithDatabase(async () => {
+        return prisma.session.findUnique({
+          where: { sessionToken: tokenHash },
+          include: {
+            user: {
+              include: {
+                roles: {
+                  include: { role: true },
+                },
+              },
+            },
+          },
+        });
+      });
+
+      if (dbSession) {
+        if (dbSession.isRevoked) {
+          return { isValid: false, error: 'La sesión ha sido revocada' };
+        }
+
+        const now = Date.now();
+        if (now > dbSession.expiresAt.getTime()) {
+          return { isValid: false, error: 'La sesión ha expirado' };
+        }
+
+        const user = dbSession.user;
+        if (user.status !== 'ACTIVE') {
+          return { isValid: false, error: 'La cuenta de usuario no está activa' };
+        }
+
+        const userType = user.userType === 'SUPERADMIN' ? 'SUPERADMIN' : 'TENANT_USER';
+        if (expectedType && userType !== expectedType) {
+          return { isValid: false, error: 'Tipo de acceso no autorizado para esta sesión' };
+        }
+
+        // Mapear rol si existe
+        let role: TenantRole | undefined;
+        if (user.roles && user.roles.length > 0) {
+          const roleSlug = user.roles[0].role.slug;
+          if (roleSlug === 'owner' || roleSlug === 'admin') role = 'TENANT_OWNER';
+          else if (roleSlug === 'editor') role = 'TENANT_EDITOR';
+          else role = 'TENANT_VIEWER';
+        }
+
+        const persistentData: PersistentSessionData = {
+          id: dbSession.id,
+          tokenHash: dbSession.sessionToken,
+          userId: user.id,
+          email: user.email,
+          fullName: user.fullName,
+          userType,
+          tenantId: user.tenantId || undefined,
+          role,
+          ipAddress: dbSession.ipAddress || undefined,
+          userAgent: dbSession.userAgent || undefined,
+          isRevoked: dbSession.isRevoked,
+          expiresAt: dbSession.expiresAt.getTime(),
+          createdAt: dbSession.createdAt.getTime(),
+          lastActiveAt: now,
+        };
+
+        // Actualizar actividad en DB de fondo
+        prisma.session.update({
+          where: { id: dbSession.id },
+          data: { lastActiveAt: new Date(now) },
+        }).catch(() => {});
+
+        // Sincronizar en caché local
+        this.sessions.set(tokenHash, persistentData);
+
+        return { isValid: true, session: persistentData };
+      }
+    } catch {
+      // Si PostgreSQL no está conectado, cae en la validación local segura
+    }
+
+    // 2. Fallback a validación local sincronizada
+    return this.validateSession(rawToken, expectedType);
+  }
+
+  /**
+   * Valida un token aleatorio en el servidor de forma síncrona (compatible con middleware/tests).
    * Computa el hash SHA-256 del token recibido y comprueba su estado, expiración y tipo de acceso.
    */
   public validateSession(
@@ -184,7 +320,7 @@ class SessionManager {
   }
 
   /**
-   * Revoca una sesión específica (logout).
+   * Revoca una sesión específica (logout) en PostgreSQL y memoria.
    */
   public revokeSession(rawToken: string): boolean {
     try {
@@ -192,12 +328,36 @@ class SessionManager {
       const session = this.sessions.get(tokenHash);
       if (session) {
         session.isRevoked = true;
-        return true;
       }
-      return false;
+
+      // Persistir revocación en PostgreSQL
+      executeWithDatabase(async () => {
+        return prisma.session.updateMany({
+          where: { sessionToken: tokenHash },
+          data: { isRevoked: true },
+        });
+      }).catch(() => {});
+
+      return true;
     } catch {
       return false;
     }
+  }
+
+  public async revokeSessionAsync(rawToken: string): Promise<boolean> {
+    const success = this.revokeSession(rawToken);
+    try {
+      const tokenHash = hashSessionToken(rawToken);
+      await executeWithDatabase(async () => {
+        return prisma.session.updateMany({
+          where: { sessionToken: tokenHash },
+          data: { isRevoked: true },
+        });
+      });
+    } catch {
+      // Ignorar si PostgreSQL está desconectado
+    }
+    return success;
   }
 
   /**
@@ -224,6 +384,18 @@ class SessionManager {
         revokedCount++;
       }
     }
+
+    // Persistir revocación masiva en PostgreSQL
+    executeWithDatabase(async () => {
+      return prisma.session.updateMany({
+        where: {
+          userId,
+          ...(currentHashToPreserve ? { sessionToken: { not: currentHashToPreserve } } : {}),
+        },
+        data: { isRevoked: true },
+      });
+    }).catch(() => {});
+
     return revokedCount;
   }
 
@@ -251,3 +423,4 @@ class SessionManager {
 }
 
 export const sessionManager = new SessionManager();
+

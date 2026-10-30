@@ -90,6 +90,53 @@ export function getSecurityContextFromRequest(req: NextRequest): SecurityContext
 }
 
 /**
+ * Versión asíncrona que valida la sesión contra la base de datos PostgreSQL mediante Prisma.
+ */
+export async function getSecurityContextFromRequestAsync(req: NextRequest): Promise<SecurityContext | null> {
+  const rootCookie = req.cookies.get(COOKIE_NAME_SUPERADMIN)?.value;
+  const tenantCookie = req.cookies.get(COOKIE_NAME_TENANT)?.value;
+
+  // 1. Intentar sesión SuperAdmin persistente
+  if (rootCookie) {
+    const val = await sessionManager.validateSessionAsync(rootCookie, 'SUPERADMIN');
+    if (val.isValid && val.session) {
+      return {
+        userId: val.session.userId,
+        email: val.session.email,
+        userType: 'SUPERADMIN',
+        role: 'SUPERADMIN',
+        session: val.session,
+      };
+    }
+  }
+
+  // 2. Intentar sesión Tenant persistente
+  if (tenantCookie) {
+    const val = await sessionManager.validateSessionAsync(tenantCookie, 'TENANT_USER');
+    if (val.isValid && val.session) {
+      const roleMap: Record<string, AppRole> = {
+        TENANT_OWNER: 'TENANT_ADMIN',
+        TENANT_ADMIN: 'TENANT_ADMIN',
+        TENANT_EDITOR: 'TENANT_EDITOR',
+        TENANT_VIEWER: 'TENANT_VIEWER',
+      };
+      const resolvedRole: AppRole = val.session.role ? (roleMap[val.session.role] || 'TENANT_VIEWER') : 'TENANT_VIEWER';
+
+      return {
+        userId: val.session.userId,
+        email: val.session.email,
+        userType: 'TENANT_USER',
+        tenantId: val.session.tenantId,
+        role: resolvedRole,
+        session: val.session,
+      };
+    }
+  }
+
+  return null;
+}
+
+/**
  * Exige una sesión de SuperAdmin verificada.
  * Si un cliente o usuario intenta acceder modificando cabeceras o cookies, es rechazado con 401 o 403.
  */
@@ -129,6 +176,15 @@ export function enforceTenantOwnership(
 
   // Si es SuperAdmin, se le permite acceso administrativo, pero se audita
   if (context.userType === 'SUPERADMIN') {
+    securityAudit.log({
+      action: 'SUPERADMIN_TENANT_SUPPORT_ACCESS',
+      severity: 'WARNING',
+      actorId: context.userId,
+      actorEmail: context.email,
+      actorRole: context.role,
+      targetTenantId,
+      details: `SuperAdmin accediendo a datos de tenant '${targetTenantId}' en modalidad de soporte técnico.`,
+    });
     return context;
   }
 
